@@ -73,6 +73,7 @@ system::rollback() {
   target="${file_name%.*.*}"
 
   case "$target" in
+    sshd_config) target="/etc/ssh/sshd_config" ;;
     99-vps-hardening.conf) target="/etc/ssh/sshd_config.d/99-vps-hardening.conf" ;;
     fail2ban.local) target="/etc/fail2ban/fail2ban.local" ;;
     jail.local) target="/etc/fail2ban/jail.local" ;;

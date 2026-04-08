@@ -9,7 +9,7 @@ VPS_HARDENING_SSH_SH=1
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-readonly SSH_DROPIN="/etc/ssh/sshd_config.d/99-vps-hardening.conf"
+readonly SSH_CONFIG="/etc/ssh/sshd_config"
 readonly SSH_KEY_DIR="/root/.ssh/vps-hardening"
 
 ssh::ensure_permissions() {
@@ -110,16 +110,42 @@ ssh::manual_key_add() {
   log::ok "Public key added to /root/.ssh/authorized_keys."
 }
 
-ssh::write_dropin() {
-  fs::backup_file "$SSH_DROPIN"
-  cat > "$SSH_DROPIN" <<'CONF'
-# Managed by vps-hardening-toolkit
-PubkeyAuthentication yes
-PasswordAuthentication no
-PermitRootLogin prohibit-password
-CONF
-  chmod 644 "$SSH_DROPIN"
-  log::ok "Updated SSH drop-in config: $SSH_DROPIN"
+ssh::set_sshd_option() {
+  local file_path="$1"
+  local key="$2"
+  local value="$3"
+  local tmp_file
+  tmp_file="$(mktemp)"
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN { IGNORECASE=1; done=0 }
+    {
+      if ($0 ~ "^[[:space:]]*#?[[:space:]]*" key "([[:space:]]+|$)") {
+        if (!done) {
+          print key " " value
+          done=1
+        }
+        next
+      }
+      print
+    }
+    END {
+      if (!done) {
+        print key " " value
+      }
+    }
+  ' "$file_path" > "$tmp_file"
+
+  cat "$tmp_file" > "$file_path"
+  rm -f "$tmp_file"
+}
+
+ssh::apply_sshd_hardening() {
+  fs::backup_file "$SSH_CONFIG"
+  ssh::set_sshd_option "$SSH_CONFIG" "PasswordAuthentication" "no"
+  ssh::set_sshd_option "$SSH_CONFIG" "PubkeyAuthentication" "yes"
+  ssh::set_sshd_option "$SSH_CONFIG" "PermitRootLogin" "prohibit-password"
+  log::ok "Updated SSH config in place: $SSH_CONFIG"
 }
 
 ssh::configure() {
@@ -153,10 +179,16 @@ ssh::configure() {
     return 0
   fi
 
-  ssh::write_dropin
+  ssh::apply_sshd_hardening
 
   if ! sshd -t; then
     log::error "sshd configuration test failed. Dangerous changes were not applied."
+    local last_backup
+    last_backup="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'sshd_config.*.bak' | sort -r | head -n 1 || true)"
+    if [[ -n "$last_backup" ]]; then
+      cp -a "$last_backup" "$SSH_CONFIG"
+      log::warn "Restored $SSH_CONFIG from backup after failed validation."
+    fi
     return 1
   fi
 
@@ -174,11 +206,11 @@ ssh::configure() {
 }
 
 ssh::status() {
-  if [[ -f "$SSH_DROPIN" ]]; then
-    log::info "SSH drop-in config found: $SSH_DROPIN"
-    sed 's/^/  /' "$SSH_DROPIN"
+  if [[ -f "$SSH_CONFIG" ]]; then
+    log::info "SSH config file found: $SSH_CONFIG"
+    grep -E '^[[:space:]]*(PasswordAuthentication|PubkeyAuthentication|PermitRootLogin)[[:space:]]+' "$SSH_CONFIG" | sed 's/^/  /' || true
   else
-    log::warn "SSH drop-in config not found: $SSH_DROPIN"
+    log::warn "SSH config file not found: $SSH_CONFIG"
   fi
 
   if ssh::has_valid_root_key; then
