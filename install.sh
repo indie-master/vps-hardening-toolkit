@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://github.com/your-org/vps-hardening-toolkit.git"
+REPO_URL="https://github.com/indie-master/vps-hardening-toolkit.git"
 INSTALL_DIR="/opt/vps-hardening-toolkit"
 BIN_LINK="/usr/local/bin/vps-hardening"
 
