@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE_PATH" ]]; do
+  LINK_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" && pwd)"
+  SOURCE_PATH="$(readlink "$SOURCE_PATH")"
+  [[ "$SOURCE_PATH" != /* ]] && SOURCE_PATH="$LINK_DIR/$SOURCE_PATH"
+done
+
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" && pwd)"
+PROJECT_DIR="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/lib/common.sh"
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/lib/ssh.sh"
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/lib/fail2ban.sh"
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/lib/ufw.sh"
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/lib/system.sh"
+
+usage() {
+  cat <<'HELP'
+vps-hardening - Ubuntu VPS hardening toolkit
+
+Usage:
+  vps-hardening help
+  vps-hardening install
+  vps-hardening ssh
+  vps-hardening fail2ban
+  vps-hardening ufw
+  vps-hardening all
+  vps-hardening status
+  vps-hardening doctor
+  vps-hardening rollback
+HELP
+}
+
+cmd_install() {
+  require_root
+  os::ensure_supported
+  mkdir -p "$BACKUP_DIR"
+  touch "$LOG_FILE"
+  chmod 640 "$LOG_FILE"
+  log::ok "Environment initialized."
+}
+
+cmd_all() {
+  cmd_install
+  ssh::configure
+  fail2ban::configure
+  ufw::configure
+  log::ok "All modules executed."
+}
+
+main() {
+  local cmd="${1:-help}"
+  case "$cmd" in
+    help|-h|--help) usage ;;
+    install) cmd_install ;;
+    ssh) cmd_install; ssh::configure ;;
+    fail2ban) cmd_install; fail2ban::configure ;;
+    ufw) cmd_install; ufw::configure ;;
+    all) cmd_all ;;
+    status) system::status ;;
+    doctor) system::doctor ;;
+    rollback) system::rollback ;;
+    *)
+      log::error "Unknown command: $cmd"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
