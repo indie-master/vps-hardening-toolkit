@@ -1,0 +1,17 @@
+# BEGIN VPS-HARDENING
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1
+bantime = 10800
+findtime = 600
+maxretry = 3
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 10800
+findtime = 600
+ignoreip = 127.0.0.1/8 ::1
+# END VPS-HARDENING
