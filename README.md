@@ -4,7 +4,6 @@ Production-oriented Bash CLI toolkit for baseline Ubuntu VPS hardening with one 
 
 ## Quick install
 
-> Replace `your-org` with your GitHub org/user.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/indie-master/vps-hardening-toolkit/main/install.sh | sudo bash
