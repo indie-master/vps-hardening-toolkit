@@ -10,114 +10,69 @@ VPS_HARDENING_FAIL2BAN_SH=1
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 readonly F2B_LOCAL="/etc/fail2ban/fail2ban.local"
-readonly F2B_JAIL="/etc/fail2ban/jail.local"
-readonly F2B_SSHD_IGNOREIP="37.114.37.137 5.35.103.233 45.134.111.181 31.58.58.208 94.159.110.127 194.226.139.231 194.226.139.231 46.8.68.212 77.236.62.50 62.63.86.29"
+readonly F2B_JAIL_DIR="/etc/fail2ban/jail.d"
+readonly F2B_MANAGED_JAIL="/etc/fail2ban/jail.d/vps-hardening.local"
+readonly F2B_NGINX_SCANNER_FILTER="/etc/fail2ban/filter.d/vps-hardening-nginx-scanner.conf"
+readonly F2B_LOGROTATE="/etc/logrotate.d/vps-hardening-fail2ban"
 
-fail2ban::ensure_jail_local() {
-  if [[ -f "$F2B_JAIL" ]]; then
+# Runtime config can override every value below.
+: "${VPSH_CONFIG_FILE:=/etc/vps-hardening/vps-hardening.env}"
+[[ -f "$VPSH_CONFIG_FILE" ]] && source "$VPSH_CONFIG_FILE"
+
+: "${VPSH_IGNORE_IPS:=127.0.0.1/8 ::1}"
+: "${VPSH_BLOCKTYPE:=deny}"
+: "${VPSH_USEDNS:=warn}"
+: "${VPSH_DEFAULT_BANTIME:=1h}"
+: "${VPSH_DEFAULT_FINDTIME:=10m}"
+: "${VPSH_DEFAULT_MAXRETRY:=5}"
+: "${VPSH_BANTIME_INCREMENT:=true}"
+: "${VPSH_BANTIME_FACTOR:=2}"
+: "${VPSH_BANTIME_MAXTIME:=7d}"
+: "${VPSH_SSH_PORT:=auto}"
+: "${VPSH_SSH_MODE:=aggressive}"
+: "${VPSH_SSH_MAXRETRY:=3}"
+: "${VPSH_SSH_FINDTIME:=10m}"
+: "${VPSH_SSH_BANTIME:=6h}"
+: "${VPSH_ENABLE_NGINX_JAILS:=true}"
+: "${VPSH_NGINX_ACCESS_LOGS:=/var/log/nginx/access.log /var/log/nginx/*access.log}"
+: "${VPSH_NGINX_ERROR_LOGS:=/var/log/nginx/error.log /var/log/nginx/*error.log}"
+: "${VPSH_ENABLE_RECIDIVE:=true}"
+: "${VPSH_LOGROTATE_ROTATE:=14}"
+
+fail2ban::detect_ssh_port() {
+  if [[ "$VPSH_SSH_PORT" != "auto" ]]; then
+    printf '%s\n' "$VPSH_SSH_PORT"
     return 0
   fi
-
-  if [[ -f /etc/fail2ban/jail.conf ]]; then
-    cp -a /etc/fail2ban/jail.conf "$F2B_JAIL"
-    log::ok "Created jail.local from jail.conf"
-  else
-    touch "$F2B_JAIL"
-    log::warn "jail.conf not found; created empty jail.local"
-  fi
+  sshd -T 2>/dev/null | awk '/^port / {print $2; exit}' || printf 'ssh\n'
 }
 
-fail2ban::upsert_sshd_jail() {
-  local tmp_file
-  tmp_file="$(mktemp)"
-  awk -v ignoreip="$F2B_SSHD_IGNOREIP" '
-    BEGIN {
-      found_sshd=0
-      section_mode=0
-      n=8
-      order[1]="enabled";   val["enabled"]="true"
-      order[2]="port";      val["port"]="ssh"
-      order[3]="filter";    val["filter"]="sshd"
-      order[4]="logpath";   val["logpath"]="/var/log/auth.log"
-      order[5]="maxretry";  val["maxretry"]="3"
-      order[6]="bantime";   val["bantime"]="10800"
-      order[7]="findtime";  val["findtime"]="600"
-      order[8]="ignoreip";  val["ignoreip"]=ignoreip
-    }
-    function flush_missing(  i,k) {
-      if (section_mode != 1) return
-      for (i=1; i<=n; i++) {
-        k=order[i]
-        if (!(k in seen)) {
-          print k " = " val[k]
-        }
-      }
-    }
-    function trim(s) {
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
-      return s
-    }
-    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
-      flush_missing()
-      header=$0
-      lower=tolower(header)
-      if (lower ~ /^[[:space:]]*\[sshd\][[:space:]]*$/) {
-        if (!found_sshd) {
-          found_sshd=1
-          section_mode=1
-          delete seen
-          print "[sshd]"
-        } else {
-          section_mode=2
-        }
-        next
-      }
-      section_mode=0
-      print
-      next
-    }
-    {
-      if (section_mode == 1) {
-        if (match($0, /^[[:space:]]*#?[[:space:]]*([[:alnum:]_]+)[[:space:]]*=/, m)) {
-          key=tolower(trim(m[1]))
-          if (key in val) {
-            if (!(key in seen)) {
-              print key " = " val[key]
-              seen[key]=1
-            }
-            next
-          }
-        }
-        print
-        next
-      }
-      if (section_mode == 2) {
-        next
-      }
-      print
-    }
-    END {
-      flush_missing()
-      if (!found_sshd) {
-        if (NR > 0) print ""
-        print "[sshd]"
-        for (i=1; i<=n; i++) {
-          k=order[i]
-          print k " = " val[k]
-        }
-      }
-    }
-  ' "$F2B_JAIL" > "$tmp_file"
-  cat "$tmp_file" > "$F2B_JAIL"
-  rm -f "$tmp_file"
+fail2ban::multiline_logpaths() {
+  local paths="$1"
+  local first=true
+  for p in $paths; do
+    if [[ "$first" == true ]]; then
+      printf '%s' "$p"
+      first=false
+    else
+      printf '\n            %s' "$p"
+    fi
+  done
+}
+
+fail2ban::write_nginx_scanner_filter() {
+  mkdir -p /etc/fail2ban/filter.d
+  cat > "$F2B_NGINX_SCANNER_FILTER" <<'CONF'
+[Definition]
+failregex = ^<HOST> - .* "(GET|POST|HEAD) /(\.env|\.git|wp-login\.php|xmlrpc\.php|phpmyadmin|pma|adminer|boaform|HNAP1|actuator|manager/html|solr/admin|owa/auth|autodiscover|\.ssh|id_rsa|passwd|shell\.php|cmd\.php|eval-stdin\.php|debug/default/view|telescope/requests).*" (400|401|403|404|405|444) .*$
+ignoreregex = ^<HOST> - .* "(GET|POST|HEAD) /(sbscr|api|assets|favicon|robots|apple-touch-icon|manifest|socket\.io|websocket|grpc|PubSubService|api/video/stream|health|status).*" .*$
+CONF
 }
 
 fail2ban::write_configs() {
-  mkdir -p /etc/fail2ban
-
-  if [[ -f "$F2B_LOCAL" ]]; then fs::backup_file "$F2B_LOCAL"; fi
-  fail2ban::ensure_jail_local
-  fs::backup_file "$F2B_JAIL"
+  mkdir -p /etc/fail2ban "$F2B_JAIL_DIR" /etc/vps-hardening
+  [[ -f "$F2B_LOCAL" ]] && fs::backup_file "$F2B_LOCAL"
+  [[ -f "$F2B_MANAGED_JAIL" ]] && fs::backup_file "$F2B_MANAGED_JAIL"
 
   cat > "$F2B_LOCAL" <<'CONF'
 [Definition]
@@ -127,61 +82,148 @@ socket = /var/run/fail2ban/fail2ban.sock
 pidfile = /var/run/fail2ban/fail2ban.pid
 CONF
 
-  fail2ban::upsert_sshd_jail
+  local ssh_port access_paths error_paths
+  ssh_port="$(fail2ban::detect_ssh_port)"
+  access_paths="$(fail2ban::multiline_logpaths "$VPSH_NGINX_ACCESS_LOGS")"
+  error_paths="$(fail2ban::multiline_logpaths "$VPSH_NGINX_ERROR_LOGS")"
 
-  chmod 644 "$F2B_LOCAL" "$F2B_JAIL"
-  log::ok "Fail2Ban configs updated without overwriting jail.local."
+  cat > "$F2B_MANAGED_JAIL" <<CONF
+# Managed by vps-hardening-toolkit. Edit /etc/vps-hardening/vps-hardening.env, then run: vps-hardening fail2ban
+[DEFAULT]
+ignoreip = $VPSH_IGNORE_IPS
+usedns = $VPSH_USEDNS
+bantime = $VPSH_DEFAULT_BANTIME
+bantime.increment = $VPSH_BANTIME_INCREMENT
+bantime.factor = $VPSH_BANTIME_FACTOR
+bantime.maxtime = $VPSH_BANTIME_MAXTIME
+findtime = $VPSH_DEFAULT_FINDTIME
+maxretry = $VPSH_DEFAULT_MAXRETRY
+backend = systemd
+banaction = ufw[blocktype=$VPSH_BLOCKTYPE]
+banaction_allports = ufw[blocktype=$VPSH_BLOCKTYPE]
+action = %(action_)s
+
+[sshd]
+enabled = true
+port = $ssh_port
+filter = sshd[mode=$VPSH_SSH_MODE]
+journalmatch = _COMM=sshd
+maxretry = $VPSH_SSH_MAXRETRY
+findtime = $VPSH_SSH_FINDTIME
+bantime = $VPSH_SSH_BANTIME
+CONF
+
+  if [[ "$VPSH_ENABLE_NGINX_JAILS" == "true" ]]; then
+    fail2ban::write_nginx_scanner_filter
+    cat >> "$F2B_MANAGED_JAIL" <<CONF
+
+[vps-nginx-scanner]
+enabled = true
+port = http,https
+filter = vps-hardening-nginx-scanner
+backend = auto
+logpath = $access_paths
+maxretry = 6
+findtime = 10m
+bantime = 6h
+
+[nginx-botsearch]
+enabled = true
+port = http,https
+backend = auto
+logpath = $error_paths
+maxretry = 5
+findtime = 10m
+bantime = 6h
+CONF
+  fi
+
+  if [[ "$VPSH_ENABLE_RECIDIVE" == "true" ]]; then
+    cat >> "$F2B_MANAGED_JAIL" <<CONF
+
+[recidive]
+enabled = true
+backend = auto
+logpath = /var/log/fail2ban.log
+banaction = ufw[blocktype=$VPSH_BLOCKTYPE]
+findtime = 1d
+bantime = 7d
+maxretry = 3
+CONF
+  fi
+
+  chmod 644 "$F2B_LOCAL" "$F2B_MANAGED_JAIL"
+  log::ok "Fail2Ban managed config written: $F2B_MANAGED_JAIL"
 }
 
 fail2ban::configure_logrotate() {
-  cat > /etc/logrotate.d/fail2ban <<'CONF'
+  cat > "$F2B_LOGROTATE" <<CONF
 /var/log/fail2ban.log {
-    weekly
-    rotate 8
+    su root adm
+    daily
+    rotate $VPSH_LOGROTATE_ROTATE
     compress
     delaycompress
     missingok
     notifempty
     create 0640 root adm
     postrotate
-        systemctl reload fail2ban >/dev/null 2>&1 || true
+        /usr/bin/fail2ban-client flushlogs >/dev/null 2>&1 || true
     endscript
 }
 CONF
-  chmod 644 /etc/logrotate.d/fail2ban
-  log::ok "Configured logrotate for fail2ban."
+  chmod 644 "$F2B_LOGROTATE"
+  log::ok "Configured logrotate: $F2B_LOGROTATE"
 }
 
 fail2ban::configure() {
   require_root
   pkg::install_if_missing fail2ban
-
+  pkg::install_if_missing ufw
+  pkg::install_if_missing python3-systemd
+  pkg::install_if_missing logrotate
   fail2ban::write_configs
   fail2ban::configure_logrotate
-
-  if ! fail2ban-client -t; then
-    log::error "Fail2Ban config test failed. Aborting restart."
-    local last_backup
-    last_backup="$(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'jail.local.*.bak' | sort -r | head -n 1 || true)"
-    if [[ -n "$last_backup" ]]; then
-      cp -a "$last_backup" "$F2B_JAIL"
-      log::warn "Restored $F2B_JAIL from backup after failed validation."
-    fi
-    return 1
-  fi
-
+  fail2ban-client -t
   systemctl enable fail2ban
   svc::restart_and_check fail2ban
-
   fail2ban-client status || true
-  fail2ban-client status sshd || true
+}
 
-  log::ok "Fail2Ban configuration complete."
+fail2ban::clean_reject() {
+  require_root
+  local pass nums
+  pass=1
+  while true; do
+    nums="$(ufw status numbered | sed -nE 's/^\[[[:space:]]*([0-9]+)\][[:space:]]+.*REJECT[[:space:]]+IN.*/\1/p' | sort -rn || true)"
+    [[ -z "$nums" ]] && break
+    echo "$nums" | while read -r n; do
+      [[ -n "$n" ]] || continue
+      yes | ufw delete "$n" || true
+    done
+    pass=$((pass + 1))
+    [[ "$pass" -gt 5 ]] && break
+  done
+  ufw status numbered || true
+}
+
+fail2ban::clear_db() {
+  require_root
+  systemctl stop fail2ban || true
+  if [[ -f /var/lib/fail2ban/fail2ban.sqlite3 ]]; then
+    cp -a /var/lib/fail2ban/fail2ban.sqlite3 "/root/fail2ban.sqlite3.bak_$(date +%F_%H-%M-%S)"
+    rm -f /var/lib/fail2ban/fail2ban.sqlite3
+  fi
+  systemctl start fail2ban
+  sleep 2
+  fail2ban-client status || true
 }
 
 fail2ban::status() {
-  systemctl is-enabled fail2ban >/dev/null 2>&1 && log::ok "fail2ban is enabled." || log::warn "fail2ban is not enabled."
   systemctl is-active fail2ban >/dev/null 2>&1 && log::ok "fail2ban is active." || log::warn "fail2ban is not active."
   fail2ban-client status || true
-  fail2ban-client status sshd || true
+  for jail in sshd vps-nginx-scanner nginx-botsearch recidive; do
+    fail2ban-client status "$jail" 2>/dev/null || true
+  done
+  ufw status || true
 }
