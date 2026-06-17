@@ -1,4 +1,63 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo control
+CORE="${VPSH_CORE:-vps-hardening}"
+FLEET="${VPSH_FLEET:-vpsh-fleet}"
+CONFIG="${VPSH_CONFIG_FILE:-/etc/vps-hardening/vps-hardening.env}"
+INVENTORY="${VPSH_FLEET_INVENTORY:-/etc/vps-hardening/fleet.inventory}"
+LANG_CHOICE="${VPSH_LANG:-}"
+
+clear_screen(){ printf '\033c'; }
+pause(){ read -r -p "${1:-Enter...}" _ || true; }
+
+choose_lang(){
+  clear_screen
+  echo "VPS Hardening Toolkit"
+  echo
+  echo "1) Русский"
+  echo "2) English"
+  read -r -p "> " x
+  [[ "$x" == "2" ]] && LANG_CHOICE="en" || LANG_CHOICE="ru"
+}
+
+t(){
+  case "${LANG_CHOICE}:$1" in
+    ru:main) echo "Главное меню";; ru:local) echo "Локальный сервер";; ru:settings) echo "Настройки";; ru:fleet) echo "Флот";; ru:logs) echo "Логи";; ru:exit) echo "Выход";; ru:back) echo "Назад";; ru:hint) echo "Стрелки или цифры, Enter - выбрать, 0 - назад";; ru:pause) echo "Нажмите Enter...";; ru:host) echo "Сервер";; ru:cmd) echo "Команда";;
+    en:main) echo "Main menu";; en:local) echo "Local server";; en:settings) echo "Settings";; en:fleet) echo "Fleet";; en:logs) echo "Logs";; en:exit) echo "Exit";; en:back) echo "Back";; en:hint) echo "Arrows or numbers, Enter - select, 0 - back";; en:pause) echo "Press Enter...";; en:host) echo "Host";; en:cmd) echo "Command";;
+    *) echo "$1";;
+  esac
+}
+
+read_key(){ local k r; IFS= read -rsn1 k || true; if [[ "$k" == $'\e' ]]; then IFS= read -rsn2 -t 0.05 r || true; k+="$r"; fi; printf '%s' "$k"; }
+
+menu(){
+  local title="$1"; shift; local items=("$@"); local pos=0 key i
+  while true; do
+    clear_screen; echo "╔════════════════════════════════════╗"; printf "║ %-34s ║\n" "$title"; echo "╚════════════════════════════════════╝"; echo "$(t hint)"; echo
+    for i in "${!items[@]}"; do
+      if [[ "$i" -eq "$pos" ]]; then printf "  \033[7m%2d) %s\033[0m\n" "$((i+1))" "${items[$i]}"; else printf "  %2d) %s\n" "$((i+1))" "${items[$i]}"; fi
+    done
+    echo "   0) $(t back)"
+    key="$(read_key)"
+    case "$key" in
+      $'\e[A') ((pos--)); [[ "$pos" -lt 0 ]] && pos=$((${#items[@]}-1));;
+      $'\e[B') ((pos++)); [[ "$pos" -ge "${#items[@]}" ]] && pos=0;;
+      "") echo "$pos"; return;;
+      0) echo -1; return;;
+      [1-9]) [[ "$key" -le "${#items[@]}" ]] && { echo "$((key-1))"; return; };;
+    esac
+  done
+}
+
+run(){ clear_screen; echo "$ $*"; echo; bash -lc "$*" || true; pause "$(t pause)"; }
+edit_file(){ mkdir -p /etc/vps-hardening; touch "$1"; chmod 600 "$1" 2>/dev/null || true; "${EDITOR:-nano}" "$1"; }
+
+local_menu(){ local c; while true; do c=$(menu "$(t local)" install doctor fail2ban logrotate clean-reject status ssh ufw all); case "$c" in -1) return;; 0) run "$CORE install";; 1) run "$CORE doctor";; 2) run "$CORE fail2ban";; 3) run "$CORE logrotate";; 4) run "$CORE clean-reject";; 5) run "$CORE status";; 6) run "$CORE ssh";; 7) run "$CORE ufw";; 8) run "$CORE all";; esac; done; }
+settings_menu(){ local c; while true; do c=$(menu "$(t settings)" "edit config" "show config" "edit inventory"); case "$c" in -1) return;; 0) edit_file "$CONFIG";; 1) run "cat '$CONFIG' 2>/dev/null || true";; 2) edit_file "$INVENTORY";; esac; done; }
+fleet_menu(){ local c h x; while true; do c=$(menu "$(t fleet)" list deploy deploy-all doctor status clean-reject run); case "$c" in -1) return;; 0) run "VPSH_FLEET_INVENTORY='$INVENTORY' $FLEET list";; 1) clear_screen; read -r -p "$(t host): " h; [[ -n "$h" ]] && run "VPSH_FLEET_INVENTORY='$INVENTORY' $FLEET deploy '$h'";; 2) run "VPSH_FLEET_INVENTORY='$INVENTORY' $FLEET deploy-all";; 3) clear_screen; read -r -p "$(t host): " h; [[ -n "$h" ]] && run "VPSH_FLEET_INVENTORY='$INVENTORY' $FLEET doctor '$h'";; 4) clear_screen; read -r -p "$(t host): " h; [[ -n "$h" ]] && run "VPSH_FLEET_INVENTORY='$INVENTORY' $FLEET status '$h'";; 5) clear_screen; read -r -p "$(t host): " h; [[ -n "$h" ]] && run "VPSH_FLEET_INVENTORY='$INVENTORY' $FLEET clean-reject '$h'";; 6) clear_screen; read -r -p "$(t host): " h; read -r -p "$(t cmd): " x; [[ -n "$h" && -n "$x" ]] && run "VPSH_FLEET_INVENTORY='$INVENTORY' $FLEET run '$h' '$x'";; esac; done; }
+
+choose_lang
+while true; do
+  c=$(menu "$(t main)" "$(t local)" "$(t settings)" "$(t fleet)" "$(t logs)" "$(t exit)")
+  case "$c" in -1|4) clear_screen; exit 0;; 0) local_menu;; 1) settings_menu;; 2) fleet_menu;; 3) run "tail -n 120 /var/log/vps-hardening.log 2>/dev/null || true";; esac
+done
