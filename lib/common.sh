@@ -8,7 +8,7 @@ VPS_HARDENING_COMMON_SH=1
 
 readonly PROJECT_NAME="vps-hardening-toolkit"
 readonly PROJECT_CMD="vps-hardening"
-readonly PROJECT_VERSION="1.0.0"
+readonly PROJECT_VERSION="1.1.0"
 readonly LOG_FILE="/var/log/vps-hardening.log"
 readonly BACKUP_DIR="/var/backups/vps-hardening"
 
@@ -24,17 +24,13 @@ _color() {
   fi
 }
 
-log::timestamp() {
-  date '+%Y-%m-%d %H:%M:%S'
-}
-
+log::timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 log::write() {
   local level="$1"
   local message="$2"
   mkdir -p "$(dirname "$LOG_FILE")"
   printf "%s [%s] %s\n" "$(log::timestamp)" "$level" "$message" >> "$LOG_FILE"
 }
-
 log::info() { log::write "INFO" "$1"; _color "36" "[INFO] $1"; }
 log::warn() { log::write "WARN" "$1"; _color "33" "[WARN] $1"; }
 log::error() { log::write "ERROR" "$1"; _color "31" "[ERROR] $1"; }
@@ -52,14 +48,12 @@ os::ensure_supported() {
     log::error "Unable to detect OS (/etc/os-release missing)."
     exit 1
   fi
-
   # shellcheck disable=SC1091
   source /etc/os-release
   if [[ "${ID:-}" != "ubuntu" ]]; then
-    log::error "Unsupported OS: ${PRETTY_NAME:-unknown}. Ubuntu 20.04/22.04/24.04 required."
+    log::error "Unsupported OS: ${PRETTY_NAME:-unknown}. Ubuntu required."
     exit 1
   fi
-
   local version_ok=false
   for ver in "${SUPPORTED_UBUNTU[@]}"; do
     if [[ "${VERSION_ID:-}" == "$ver" ]]; then
@@ -67,13 +61,11 @@ os::ensure_supported() {
       break
     fi
   done
-
   if [[ "$version_ok" != true ]]; then
-    log::error "Unsupported Ubuntu version: ${VERSION_ID:-unknown}. Supported: ${SUPPORTED_UBUNTU[*]}"
-    exit 1
+    log::warn "Ubuntu ${VERSION_ID:-unknown} is not in tested list: ${SUPPORTED_UBUNTU[*]}. Continuing carefully."
+  else
+    log::ok "Detected supported system: ${PRETTY_NAME}."
   fi
-
-  log::ok "Detected supported system: ${PRETTY_NAME}."
 }
 
 prompt::yes_no() {
@@ -88,7 +80,6 @@ prompt::yes_no() {
       read -r -p "$question [y/N]: " answer
       answer="${answer:-n}"
     fi
-
     case "${answer,,}" in
       y|yes) return 0 ;;
       n|no) return 1 ;;
@@ -99,14 +90,10 @@ prompt::yes_no() {
 
 fs::backup_file() {
   local file_path="$1"
-  if [[ ! -f "$file_path" ]]; then
-    return 0
-  fi
-
+  [[ -f "$file_path" ]] || return 0
   mkdir -p "$BACKUP_DIR"
-  local ts
+  local ts backup_name
   ts="$(date '+%Y%m%d-%H%M%S')"
-  local backup_name
   backup_name="$(basename "$file_path").${ts}.bak"
   cp -a "$file_path" "$BACKUP_DIR/$backup_name"
   log::ok "Backup created: $BACKUP_DIR/$backup_name"
@@ -116,7 +103,6 @@ fs::ensure_file() {
   local file_path="$1"
   local owner="$2"
   local mode="$3"
-
   touch "$file_path"
   chown "$owner" "$file_path"
   chmod "$mode" "$file_path"
@@ -154,13 +140,11 @@ net::is_valid_ipv4() {
     ((octet >= 0 && octet <= 255)) || return 1
   done
 }
-
 net::is_valid_cidr4() {
   local cidr="$1"
   [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$ ]] || return 1
   net::is_valid_ipv4 "${cidr%/*}"
 }
-
 net::is_valid_ipv6_or_cidr() {
   local value="$1"
   if [[ "$value" =~ : ]]; then
@@ -173,7 +157,6 @@ net::is_valid_ipv6_or_cidr() {
     return 1
   fi
 }
-
 text::trim() {
   local var="$*"
   var="${var#"${var%%[![:space:]]*}"}"
