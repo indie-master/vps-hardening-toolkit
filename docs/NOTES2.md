@@ -1,3 +1,4 @@
-# Notes
+#!/usr/bin/env bash
+set -euo pipefail
 
-ok
+echo hello
