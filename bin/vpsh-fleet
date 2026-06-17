@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+INVENTORY="${VPSH_FLEET_INVENTORY:-./inventory}"
+REMOTE_DIR="${VPSH_REMOTE_DIR:-/opt/vps-hardening-toolkit}"
+REMOTE_CMD="${VPSH_REMOTE_CMD:-/usr/local/bin/vps-hardening}"
+
+usage() {
+  cat <<'HELP'
+vpsh-fleet - small helper for rolling vps-hardening-toolkit to many servers
+
+Usage:
+  vpsh-fleet list
+  vpsh-fleet deploy HOST
+  vpsh-fleet run HOST COMMAND
+  vpsh-fleet doctor HOST
+  vpsh-fleet status HOST
+  vpsh-fleet fail2ban HOST
+  vpsh-fleet logrotate HOST
+  vpsh-fleet clean-reject HOST
+HELP
+}
+
+get_host_line() {
+  local host="$1"
+  awk -v h="$host" '$1 == h {print; found=1} END {exit found ? 0 : 1}' "$INVENTORY"
+}
+
+list_hosts() {
+  awk 'NF && $1 !~ /^#/ {printf "%-20s %-28s %s\n", $1, $2, $3}' "$INVENTORY"
+}
+
+remote_ip() {
+  local host="$1"
+  get_host_line "$host" | awk '{print $2}'
+}
+
+deploy_host() {
+  local host="$1" ip
+  ip="$(remote_ip "$host")"
+  echo "Deploying to $host / $ip"
+  tar --exclude='.git' -C "$PROJECT_DIR" -czf - . | ssh "root@$ip" "rm -rf '$REMOTE_DIR' && mkdir -p '$REMOTE_DIR' && tar -xzf - -C '$REMOTE_DIR' && chmod +x '$REMOTE_DIR/bin/vps-hardening' '$REMOTE_DIR/bin/vpsh-fleet' 2>/dev/null || true && ln -sf '$REMOTE_DIR/bin/vps-hardening' '$REMOTE_CMD'"
+  ssh -n "root@$ip" "$REMOTE_CMD version"
+}
+
+run_host() {
+  local host="$1"; shift
+  local ip
+  ip="$(remote_ip "$host")"
+  ssh -n "root@$ip" "$REMOTE_CMD $*"
+}
+
+main() {
+  local cmd="${1:-help}"
+  case "$cmd" in
+    help|-h|--help) usage ;;
+    list) list_hosts ;;
+    deploy) deploy_host "${2:?HOST required}" ;;
+    run) shift; run_host "${1:?HOST required}" "${@:2}" ;;
+    doctor|status|fail2ban|logrotate|clean-reject)
+      run_host "${2:?HOST required}" "$cmd"
+      ;;
+    *) echo "Unknown command: $cmd"; usage; exit 1 ;;
+  esac
+}
+
+main "$@"
