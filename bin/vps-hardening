@@ -28,6 +28,7 @@ vps-hardening - Ubuntu VPS hardening toolkit
 
 Usage:
   vps-hardening help
+  vps-hardening version
   vps-hardening install
   vps-hardening ssh
   vps-hardening fail2ban
@@ -35,16 +36,27 @@ Usage:
   vps-hardening all
   vps-hardening status
   vps-hardening doctor
+  vps-hardening logrotate
+  vps-hardening clean-reject
+  vps-hardening clear-fail2ban-db
   vps-hardening rollback
+
+Config:
+  /etc/vps-hardening/vps-hardening.env
+  or set VPSH_CONFIG_FILE=/custom/path.env
 HELP
 }
 
 cmd_install() {
   require_root
   os::ensure_supported
-  mkdir -p "$BACKUP_DIR"
+  mkdir -p "$BACKUP_DIR" /etc/vps-hardening
   touch "$LOG_FILE"
   chmod 640 "$LOG_FILE"
+  if [[ ! -f /etc/vps-hardening/vps-hardening.env && -f "$PROJECT_DIR/templates/vps-hardening.env.example" ]]; then
+    cp -a "$PROJECT_DIR/templates/vps-hardening.env.example" /etc/vps-hardening/vps-hardening.env
+    chmod 600 /etc/vps-hardening/vps-hardening.env
+  fi
   log::ok "Environment initialized."
 }
 
@@ -60,6 +72,7 @@ main() {
   local cmd="${1:-help}"
   case "$cmd" in
     help|-h|--help) usage ;;
+    version) echo "${PROJECT_NAME} ${PROJECT_VERSION}" ;;
     install) cmd_install ;;
     ssh) cmd_install; ssh::configure ;;
     fail2ban) cmd_install; fail2ban::configure ;;
@@ -67,6 +80,9 @@ main() {
     all) cmd_all ;;
     status) system::status ;;
     doctor) system::doctor ;;
+    logrotate) fail2ban::configure_logrotate; logrotate -d /etc/logrotate.d/vps-hardening-fail2ban ;;
+    clean-reject) fail2ban::clean_reject ;;
+    clear-fail2ban-db) fail2ban::clear_db ;;
     rollback) system::rollback ;;
     *)
       log::error "Unknown command: $cmd"
