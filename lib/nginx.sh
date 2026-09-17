@@ -8,7 +8,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 readonly NGINX_KEYRING="/usr/share/keyrings/nginx-archive-keyring.gpg"
 readonly NGINX_LIST="/etc/apt/sources.list.d/nginx.list"
 readonly NGINX_PIN="/etc/apt/preferences.d/99nginx"
-readonly NGINX_KEY_FINGERPRINT="573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62"
+readonly NGINX_REQUIRED_KEY_FINGERPRINT="573BFD6B3D8FBC641079A6ABABF5BD827BD9BF62"
 
 nginx::ubuntu_version() { source /etc/os-release; printf '%s\n' "${VERSION_ID:-unknown}"; }
 nginx::codename() { source /etc/os-release; printf '%s\n' "${VERSION_CODENAME:-}"; }
@@ -19,15 +19,17 @@ nginx::install_prerequisites() {
 }
 
 nginx::configure_official_repo() {
-  local codename="$1" tmp_key fingerprint
+  local codename="$1" tmp_key fingerprints
   tmp_key="$(mktemp)"
   curl -fsSL https://nginx.org/keys/nginx_signing.key -o "$tmp_key"
-  fingerprint="$(gpg --show-keys --with-colons "$tmp_key" 2>/dev/null | awk -F: '$1=="fpr" && !found {print $10; found=1}')"
-  if [[ "$fingerprint" != "$NGINX_KEY_FINGERPRINT" ]]; then
+  fingerprints="$(gpg --show-keys --with-colons "$tmp_key" 2>/dev/null | awk -F: '$1=="fpr" {print $10}')"
+  if ! grep -Fxq "$NGINX_REQUIRED_KEY_FINGERPRINT" <<< "$fingerprints"; then
     rm -f "$tmp_key"
-    log::error "nginx signing key fingerprint mismatch: $fingerprint"
+    log::error "nginx signing key bundle does not contain required fingerprint $NGINX_REQUIRED_KEY_FINGERPRINT."
+    log::error "Fingerprints received: $(tr '\n' ' ' <<< "$fingerprints" | sed 's/[[:space:]]*$//')"
     return 1
   fi
+  log::ok "Verified official nginx signing key bundle."
   gpg --dearmor --yes --output "$NGINX_KEYRING" "$tmp_key"
   rm -f "$tmp_key"
   chmod 644 "$NGINX_KEYRING"
