@@ -14,6 +14,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/ssh.sh"
 source "$(dirname "${BASH_SOURCE[0]}")/fail2ban.sh"
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/ufw.sh"
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/network.sh"
+# shellcheck disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/nginx.sh"
 
 system::doctor() {
   require_root
@@ -23,11 +27,22 @@ system::doctor() {
   command -v sshd >/dev/null 2>&1 && log::ok "sshd binary found." || log::error "sshd binary missing."
   command -v fail2ban-client >/dev/null 2>&1 && log::ok "fail2ban-client found." || log::warn "fail2ban-client missing."
   command -v ufw >/dev/null 2>&1 && log::ok "ufw binary found." || log::warn "ufw binary missing."
+  command -v nginx >/dev/null 2>&1 && log::ok "nginx binary found." || log::warn "nginx binary missing."
 
   if sshd -t >/dev/null 2>&1; then
     log::ok "sshd configuration test passed."
   else
     log::error "sshd configuration test failed."
+  fi
+
+  if command -v nginx >/dev/null 2>&1; then
+    nginx -t >/dev/null 2>&1 && log::ok "nginx configuration test passed." || log::error "nginx configuration test failed."
+  fi
+
+  if [[ "$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)" == "bbr" ]]; then
+    log::ok "BBR is active."
+  else
+    log::warn "BBR is not active."
   fi
 
   log::info "Doctor checks finished."
@@ -37,6 +52,10 @@ system::status() {
   require_root
   log::info "--- SSH status ---"
   ssh::status
+  log::info "--- Network status ---"
+  network::status
+  log::info "--- nginx status ---"
+  nginx::status
   log::info "--- Fail2Ban status ---"
   fail2ban::status
   log::info "--- UFW status ---"
@@ -74,9 +93,10 @@ system::rollback() {
 
   case "$target" in
     sshd_config) target="/etc/ssh/sshd_config" ;;
-    99-vps-hardening.conf) target="/etc/ssh/sshd_config.d/99-vps-hardening.conf" ;;
+    00-vps-hardening.conf|99-vps-hardening.conf) target="/etc/ssh/sshd_config.d/$target" ;;
     fail2ban.local) target="/etc/fail2ban/fail2ban.local" ;;
-    jail.local) target="/etc/fail2ban/jail.local" ;;
+    jail.local|vps-hardening.local) target="/etc/fail2ban/jail.d/vps-hardening.local" ;;
+    nginx.conf) target="/etc/nginx/nginx.conf" ;;
     *)
       log::error "Unknown backup target for file: $file_name"
       return 1
@@ -88,7 +108,9 @@ system::rollback() {
 
   if [[ "$target" == *sshd* ]]; then
     sshd -t && svc::restart_and_check ssh || true
-  elif [[ "$target" == *fail2ban* || "$target" == *jail.local ]]; then
+  elif [[ "$target" == *fail2ban* || "$target" == *jail* ]]; then
     fail2ban-client -t && svc::restart_and_check fail2ban || true
+  elif [[ "$target" == *nginx* ]]; then
+    nginx -t && svc::restart_and_check nginx || true
   fi
 }
