@@ -196,6 +196,17 @@ CONF
   log::ok "Configured logrotate: $F2B_LOGROTATE"
 }
 
+fail2ban::wait_until_ready() {
+  local attempt
+  for attempt in {1..20}; do
+    if fail2ban-client ping >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
 fail2ban::configure() {
   require_root
   pkg::install_if_missing fail2ban
@@ -207,7 +218,11 @@ fail2ban::configure() {
   fail2ban-client -t
   systemctl enable fail2ban
   svc::restart_and_check fail2ban
-  fail2ban-client status || true
+  if fail2ban::wait_until_ready; then
+    fail2ban-client status || true
+  else
+    log::warn "fail2ban service is active, but its control socket is not ready yet."
+  fi
 }
 
 fail2ban::clean_reject() {
@@ -235,7 +250,7 @@ fail2ban::clear_db() {
     rm -f /var/lib/fail2ban/fail2ban.sqlite3
   fi
   systemctl start fail2ban
-  sleep 1
+  fail2ban::wait_until_ready || true
   fail2ban-client status || true
 }
 
@@ -244,9 +259,14 @@ fail2ban::status() {
     log::warn "fail2ban-client not found."
     return 0
   fi
-  fail2ban-client status || true
-  local jail
+
+  local status_output jail
+  status_output="$(fail2ban-client status 2>/dev/null || true)"
+  [[ -n "$status_output" ]] && printf '%s\n' "$status_output"
+
   for jail in sshd vps-nginx-scanner nginx-botsearch recidive; do
-    fail2ban-client status "$jail" 2>/dev/null || true
+    if fail2ban-client status "$jail" >/dev/null 2>&1; then
+      fail2ban-client status "$jail" || true
+    fi
   done
 }
