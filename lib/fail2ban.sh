@@ -44,7 +44,19 @@ fail2ban::detect_ssh_port() {
     printf '%s\n' "$VPSH_SSH_PORT"
     return 0
   fi
-  sshd -T 2>/dev/null | awk '/^port / {print $2; exit}' || printf 'ssh\n'
+
+  # Consume the complete sshd -T output. Do not exit awk early: with
+  # `set -o pipefail`, an early reader exit can SIGPIPE sshd and make the
+  # fallback run as well, producing a value such as $'22\nssh'.
+  local ssh_port
+  ssh_port="$(sshd -T 2>/dev/null | awk '/^port / && !found {print $2; found=1} END {if (!found) exit 1}')" || ssh_port="ssh"
+
+  if [[ "$ssh_port" =~ ^[0-9]+$ ]] || [[ "$ssh_port" == "ssh" ]]; then
+    printf '%s\n' "$ssh_port"
+  else
+    log::warn "Unexpected SSH port value '$ssh_port'; falling back to service name 'ssh'." >&2
+    printf '%s\n' "ssh"
+  fi
 }
 
 fail2ban::multiline_logpaths() {
@@ -58,6 +70,10 @@ fail2ban::multiline_logpaths() {
       printf '\n            %s' "$p"
     fi
   done
+}
+
+fail2ban::nginx_available() {
+  command -v nginx >/dev/null 2>&1 || [[ -d /etc/nginx ]]
 }
 
 fail2ban::write_nginx_scanner_filter() {
@@ -114,8 +130,9 @@ bantime = $VPSH_SSH_BANTIME
 CONF
 
   if [[ "$VPSH_ENABLE_NGINX_JAILS" == "true" ]]; then
-    fail2ban::write_nginx_scanner_filter
-    cat >> "$F2B_MANAGED_JAIL" <<CONF
+    if fail2ban::nginx_available; then
+      fail2ban::write_nginx_scanner_filter
+      cat >> "$F2B_MANAGED_JAIL" <<CONF
 
 [vps-nginx-scanner]
 enabled = true
@@ -136,6 +153,9 @@ maxretry = 5
 findtime = 10m
 bantime = 6h
 CONF
+    else
+      log::info "Nginx jails requested, but nginx is not installed; skipping nginx jails."
+    fi
   fi
 
   if [[ "$VPSH_ENABLE_RECIDIVE" == "true" ]]; then
@@ -215,15 +235,18 @@ fail2ban::clear_db() {
     rm -f /var/lib/fail2ban/fail2ban.sqlite3
   fi
   systemctl start fail2ban
-  sleep 2
+  sleep 1
   fail2ban-client status || true
 }
 
 fail2ban::status() {
-  systemctl is-active fail2ban >/dev/null 2>&1 && log::ok "fail2ban is active." || log::warn "fail2ban is not active."
+  if ! command -v fail2ban-client >/dev/null 2>&1; then
+    log::warn "fail2ban-client not found."
+    return 0
+  fi
   fail2ban-client status || true
+  local jail
   for jail in sshd vps-nginx-scanner nginx-botsearch recidive; do
     fail2ban-client status "$jail" 2>/dev/null || true
   done
-  ufw status || true
 }
